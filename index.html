@@ -1,0 +1,963 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Branch Prediction Module — RISC-V Control Hazard Detection</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Syne:wght@600;700;800&family=DM+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --cyan: #22d3ee;
+            --violet: #a78bfa;
+            --rose: #f87171;
+            --amber: #fbbf24;
+            --emerald: #34d399;
+            --sky: #38bdf8;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            font-family: 'DM Sans', sans-serif;
+            background: #050c1a;
+        }
+
+        .title-font { font-family: 'Syne', sans-serif; }
+        .mono { font-family: 'JetBrains Mono', monospace; }
+
+        /* Noise texture overlay */
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 512 512' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+            pointer-events: none;
+            z-index: 0;
+            opacity: 0.5;
+        }
+
+        /* Grid lines background */
+        .grid-bg {
+            background-image:
+                linear-gradient(rgba(34, 211, 238, 0.03) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(34, 211, 238, 0.03) 1px, transparent 1px);
+            background-size: 40px 40px;
+        }
+
+        .glass {
+            background: rgba(8, 18, 38, 0.8);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(148, 163, 184, 0.1);
+        }
+
+        .glass-bright {
+            background: rgba(15, 28, 58, 0.9);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(34, 211, 238, 0.15);
+        }
+
+        .neon-cyan {
+            text-shadow: 0 0 12px rgba(34, 211, 238, 0.8), 0 0 30px rgba(34, 211, 238, 0.4);
+        }
+
+        .glow-cyan { box-shadow: 0 0 20px rgba(34, 211, 238, 0.25), 0 0 60px rgba(34, 211, 238, 0.1); }
+        .glow-violet { box-shadow: 0 0 20px rgba(167, 139, 250, 0.25), 0 0 60px rgba(167, 139, 250, 0.1); }
+
+        /* Logo COA chip */
+        .logo-chip {
+            position: relative;
+            width: 44px;
+            height: 44px;
+            background: linear-gradient(135deg, #0d1f3c, #0a1628);
+            border: 1.5px solid rgba(34, 211, 238, 0.5);
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 0 16px rgba(34, 211, 238, 0.3), inset 0 0 12px rgba(34, 211, 238, 0.05);
+        }
+
+        .logo-chip::before {
+            content: '';
+            position: absolute;
+            inset: 4px;
+            border: 1px solid rgba(34, 211, 238, 0.2);
+            border-radius: 6px;
+        }
+
+        /* Chip pins decoration */
+        .chip-pin {
+            position: absolute;
+            width: 4px;
+            height: 8px;
+            background: rgba(34, 211, 238, 0.6);
+            border-radius: 1px;
+        }
+
+        .editor-container {
+            background: #030810;
+            border: 1px solid rgba(34, 211, 238, 0.15);
+        }
+
+        /* Stage cards */
+        .stage-card {
+            transition: all 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+            position: relative;
+            overflow: hidden;
+        }
+
+        .stage-card::after {
+            content: '';
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: 2px;
+            background: currentColor;
+            opacity: 0.4;
+            transform: scaleX(0);
+            transition: transform 0.3s ease;
+        }
+
+        .stage-card:hover::after { transform: scaleX(1); }
+        .stage-card:hover { transform: translateY(-2px); }
+
+        .stage-if { color: var(--cyan); border-color: rgba(34, 211, 238, 0.25); }
+        .stage-id { color: var(--violet); border-color: rgba(167, 139, 250, 0.25); }
+        .stage-ex { color: var(--amber); border-color: rgba(251, 191, 36, 0.25); }
+        .stage-mem { color: var(--sky); border-color: rgba(56, 189, 248, 0.25); }
+        .stage-wb { color: var(--emerald); border-color: rgba(52, 211, 153, 0.25); }
+
+        .stage-inner {
+            min-height: 70px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 10px;
+            text-align: center;
+            border-radius: 8px;
+            background: rgba(0,0,0,0.3);
+            padding: 8px;
+            color: rgba(148, 163, 184, 0.7);
+            border: 1px dashed rgba(100, 116, 139, 0.3);
+            line-height: 1.4;
+        }
+
+        /* Hazard badge */
+        .hazard-badge {
+            position: absolute;
+            top: -8px;
+            right: -8px;
+            background: var(--amber);
+            color: #000;
+            font-size: 8px;
+            font-weight: 800;
+            font-family: 'JetBrains Mono', monospace;
+            padding: 2px 6px;
+            border-radius: 20px;
+            letter-spacing: 0.05em;
+            box-shadow: 0 0 10px rgba(251, 191, 36, 0.6);
+            animation: hazardPing 2s ease-in-out infinite;
+        }
+
+        @keyframes hazardPing {
+            0%, 100% { box-shadow: 0 0 8px rgba(251, 191, 36, 0.6); }
+            50% { box-shadow: 0 0 20px rgba(251, 191, 36, 0.9), 0 0 40px rgba(251, 191, 36, 0.4); }
+        }
+
+        /* Connector arrows between stages */
+        .stage-connector {
+            display: flex;
+            align-items: center;
+            color: rgba(100, 116, 139, 0.4);
+            font-size: 10px;
+            flex-shrink: 0;
+            margin-top: 22px; /* align with stage content */
+        }
+
+        .pipeline-arrow {
+            width: 16px;
+            height: 2px;
+            background: linear-gradient(90deg, rgba(34, 211, 238, 0.2), rgba(167, 139, 250, 0.2));
+            position: relative;
+        }
+        .pipeline-arrow::after {
+            content: '▶';
+            position: absolute;
+            right: -6px;
+            top: -5px;
+            font-size: 8px;
+            color: rgba(100, 116, 139, 0.5);
+        }
+
+        /* Flush animation */
+        .flush-anim {
+            animation: flushEffect 0.8s ease-in-out forwards;
+        }
+        @keyframes flushEffect {
+            0% { background: rgba(248, 113, 113, 0.0); }
+            30% { background: rgba(248, 113, 113, 0.3); transform: scale(1.04); }
+            100% { background: rgba(0,0,0,0.3); transform: scale(1); }
+        }
+
+        /* Hazard list items */
+        .hazard-item {
+            transition: all 0.2s ease;
+        }
+        .hazard-item:hover {
+            border-color: rgba(248, 113, 113, 0.5) !important;
+            transform: translateX(3px);
+        }
+
+        /* Code line hover */
+        .code-line-hover:hover {
+            background: rgba(34, 211, 238, 0.05);
+        }
+
+        /* Stat bars */
+        .stat-bar {
+            height: 6px;
+            background: rgba(15, 28, 58, 0.8);
+            border-radius: 99px;
+            overflow: hidden;
+        }
+        .stat-fill {
+            height: 100%;
+            border-radius: 99px;
+            transition: width 0.8s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+
+        /* Predict btn */
+        .predict-btn {
+            background: linear-gradient(135deg, #7c3aed, #a855f7, #ec4899);
+            background-size: 200% 200%;
+            animation: gradShift 3s ease infinite;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .predict-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 30px rgba(167, 139, 250, 0.5);
+        }
+        @keyframes gradShift {
+            0%, 100% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+        }
+
+        /* Hazard count big */
+        .hazard-big-num {
+            font-family: 'Syne', sans-serif;
+            background: linear-gradient(135deg, #f87171, #fb923c);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        /* Scrollbar */
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: rgba(100, 116, 139, 0.3); border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: rgba(100, 116, 139, 0.5); }
+
+        /* Analyze button */
+        .analyze-btn {
+            background: linear-gradient(135deg, #0891b2, #6d28d9);
+            transition: all 0.2s;
+        }
+        .analyze-btn:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 8px 24px rgba(34, 211, 238, 0.35);
+        }
+
+        /* Flush notice */
+        #flush-notice {
+            border: 1px solid rgba(248, 113, 113, 0.25);
+            background: rgba(248, 113, 113, 0.06);
+        }
+
+        /* Pipeline wrapper for horizontal scroll on small screens */
+        .pipeline-wrapper {
+            display: grid;
+            grid-template-columns: repeat(5, 1fr);
+            gap: 6px;
+            min-width: 0;
+        }
+
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .slide-in { animation: slideIn 0.3s ease forwards; }
+
+        /* Active instruction in pipeline */
+        .stage-active-cyan { color: var(--cyan); font-weight: 700; }
+        .stage-active-violet { color: var(--violet); font-weight: 700; }
+        .stage-active-amber { color: var(--amber); font-weight: 700; }
+        .stage-active-sky { color: var(--sky); font-weight: 700; }
+        .stage-active-emerald { color: var(--emerald); font-weight: 700; }
+
+    </style>
+</head>
+<body class="grid-bg text-slate-200 min-h-screen overflow-x-hidden relative">
+
+    <!-- NAVBAR -->
+    <nav class="border-b border-slate-800/60 bg-slate-950/70 backdrop-blur-2xl fixed w-full z-50">
+        <div class="max-w-screen-2xl mx-auto px-6 py-4 flex items-center justify-between">
+            <div class="flex items-center gap-x-3.5">
+                <!-- COA Logo -->
+                <div class="logo-chip">
+                    <!-- Chip pins -->
+                    <div class="chip-pin" style="top:-6px;left:8px;width:4px;height:6px;transform:rotate(0)"></div>
+                    <div class="chip-pin" style="top:-6px;left:16px;width:4px;height:6px"></div>
+                    <div class="chip-pin" style="bottom:-6px;left:8px;width:4px;height:6px"></div>
+                    <div class="chip-pin" style="bottom:-6px;left:16px;width:4px;height:6px"></div>
+                    <div class="chip-pin" style="left:-6px;top:8px;width:6px;height:4px"></div>
+                    <div class="chip-pin" style="left:-6px;top:16px;width:6px;height:4px"></div>
+                    <div class="chip-pin" style="right:-6px;top:8px;width:6px;height:4px"></div>
+                    <div class="chip-pin" style="right:-6px;top:16px;width:6px;height:4px"></div>
+                    <!-- Inner icon -->
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                        <rect x="4" y="4" width="16" height="16" rx="2" stroke="#22d3ee" stroke-width="1.5"/>
+                        <rect x="8" y="8" width="8" height="8" rx="1" fill="rgba(34,211,238,0.2)" stroke="#22d3ee" stroke-width="1"/>
+                        <circle cx="12" cy="12" r="1.5" fill="#22d3ee"/>
+                        <line x1="12" y1="4" x2="12" y2="7" stroke="#22d3ee" stroke-width="1.2"/>
+                        <line x1="12" y1="17" x2="12" y2="20" stroke="#22d3ee" stroke-width="1.2"/>
+                        <line x1="4" y1="12" x2="7" y2="12" stroke="#22d3ee" stroke-width="1.2"/>
+                        <line x1="17" y1="12" x2="20" y2="12" stroke="#22d3ee" stroke-width="1.2"/>
+                    </svg>
+                </div>
+                <div>
+                    <h1 class="title-font text-xl font-bold tracking-tight neon-cyan" style="color:#22d3ee; line-height:1.1;">
+                        Branch Prediction Module
+                    </h1>
+                    <p class="mono text-[9px] text-slate-500 tracking-[2.5px] mt-0.5">COA • RISC-V • 5-STAGE PIPELINE</p>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-x-3">
+                <button onclick="loadSampleCode()"
+                     class="flex items-center gap-x-2 px-4 py-2 rounded-xl text-sm hover:bg-white/5 transition-all border border-slate-700/60 text-slate-300">
+                    <i class="fa-solid fa-file-code text-cyan-400 text-xs"></i>
+                    <span class="font-medium">Load Sample</span>
+                </button>
+                <button onclick="clearEditor()"
+                     class="flex items-center gap-x-2 px-4 py-2 rounded-xl text-sm hover:bg-white/5 transition-all border border-slate-700/60 text-slate-300">
+                    <i class="fa-solid fa-trash text-rose-400 text-xs"></i>
+                    <span class="font-medium">Clear</span>
+                </button>
+                <div class="w-px h-6 bg-slate-700/60"></div>
+                <button onclick="analyzeCode()"
+                        class="analyze-btn px-5 py-2.5 text-white text-sm font-semibold rounded-xl flex items-center gap-x-2 shadow-lg">
+                    <i class="fa-solid fa-microchip text-xs"></i>
+                    <span>ANALYZE HAZARDS</span>
+                </button>
+            </div>
+        </div>
+    </nav>
+
+    <!-- MAIN -->
+    <div class="pt-20 pb-16 max-w-screen-2xl mx-auto px-6 relative z-10">
+
+        <!-- PAGE HEADER -->
+        <div class="py-8 flex items-end justify-between">
+            <div>
+                <div class="mono text-[10px] text-cyan-500 tracking-[3px] mb-2 uppercase">Computer Organization & Architecture</div>
+                <h2 class="title-font text-4xl font-bold tracking-tight text-white leading-tight">
+                    Lightweight Dynamic<br>
+                    <span style="color:#22d3ee;">Branch Prediction</span>
+                </h2>
+                <p class="text-slate-400 mt-2 text-sm">Control Hazard Detection &amp; 5-Stage RISC-V Pipeline Analysis</p>
+            </div>
+            <div class="flex items-center gap-x-6 text-[10px] mono text-slate-500 uppercase tracking-widest">
+                <div class="flex items-center gap-x-2">
+                    <div class="w-2 h-2 rounded-full bg-cyan-400" style="box-shadow:0 0 6px #22d3ee"></div>
+                    <span>5-Stage Pipeline</span>
+                </div>
+                <div class="flex items-center gap-x-2">
+                    <div class="w-2 h-2 rounded-full bg-violet-400" style="box-shadow:0 0 6px #a78bfa"></div>
+                    <span>1-bit &amp; 2-bit Predictors</span>
+                </div>
+                <div class="flex items-center gap-x-2">
+                    <div class="w-2 h-2 rounded-full bg-rose-400" style="box-shadow:0 0 6px #f87171"></div>
+                    <span>Control Hazards</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- MAIN GRID -->
+        <div class="grid grid-cols-12 gap-5">
+
+            <!-- LEFT: CODE EDITOR -->
+            <div class="col-span-12 lg:col-span-5">
+                <div class="glass rounded-2xl p-5 h-full flex flex-col" style="border-color:rgba(34,211,238,0.12);">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center gap-x-2.5">
+                            <div class="w-8 h-8 rounded-lg bg-cyan-500/10 border border-cyan-500/20 flex items-center justify-center">
+                                <i class="fa-solid fa-code text-cyan-400 text-sm"></i>
+                            </div>
+                            <div>
+                                <span class="font-semibold text-sm text-white">RISC-V Assembly Editor</span>
+                                <p class="mono text-[10px] text-slate-500">Paste or type your code below</p>
+                            </div>
+                        </div>
+                        <button onclick="copyCode()"
+                             class="mono text-[10px] flex items-center gap-x-1.5 px-3 py-1.5 rounded-lg bg-slate-800/80 hover:bg-slate-700/80 transition-colors text-slate-400 border border-slate-700/50">
+                            <i class="fa-solid fa-copy"></i>
+                            <span>COPY</span>
+                        </button>
+                    </div>
+
+                    <!-- Editor Area -->
+                    <div class="editor-container flex-1 rounded-xl overflow-hidden flex" style="min-height: 400px;">
+                        <div id="line-numbers"
+                             class="bg-slate-950/80 mono text-[11px] text-slate-600 py-4 px-3 text-right select-none leading-6 border-r border-slate-800/60 min-w-[2.8rem] overflow-hidden">
+                        </div>
+                        <textarea id="code-editor"
+                                  class="flex-1 bg-transparent mono text-[12px] text-slate-200 p-4 leading-6 outline-none resize-none overflow-auto"
+                                  spellcheck="false"
+                                  oninput="updateLineNumbers()"></textarea>
+                    </div>
+
+                    <div class="mt-3 flex items-center justify-between">
+                        <div class="mono text-[9px] text-slate-600">beq · bne · blt · bge · jal · jalr · lw · sw · add · sub · addi...</div>
+                        <div class="flex items-center gap-x-1.5">
+                            <div class="w-1.5 h-1.5 bg-emerald-400 rounded-full animate-pulse"></div>
+                            <span class="mono text-[9px] text-emerald-500">READY</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- CENTER -->
+            <div class="col-span-12 lg:col-span-4 space-y-5">
+
+                <!-- HAZARD ANALYSIS -->
+                <div class="glass rounded-2xl p-5">
+                    <div class="flex items-center justify-between mb-4">
+                        <div class="flex items-center gap-x-2.5">
+                            <div class="w-8 h-8 rounded-lg bg-amber-500/10 border border-amber-500/20 flex items-center justify-center">
+                                <i class="fa-solid fa-triangle-exclamation text-amber-400 text-sm"></i>
+                            </div>
+                            <span class="font-semibold text-sm text-white">Control Hazard Analysis</span>
+                        </div>
+                        <span id="hazard-count-badge"
+                              class="mono px-3 py-1 text-[10px] bg-rose-500/10 text-rose-400 rounded-lg border border-rose-500/20">0 HAZARDS</span>
+                    </div>
+                    <div id="hazard-list" class="space-y-2.5 max-h-[240px] overflow-auto pr-1">
+                        <div class="border border-dashed border-slate-700/60 rounded-xl p-6 text-center">
+                            <i class="fa-solid fa-shield-halved text-3xl text-slate-700 mb-2"></i>
+                            <p class="text-slate-500 text-xs">No control hazards detected.<br>Load sample code or write your own.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- PIPELINE VISUALIZATION -->
+                <div class="glass rounded-2xl p-5">
+                    <!-- Header -->
+                    <div class="flex items-start justify-between mb-5">
+                        <div>
+                            <div class="flex items-center gap-x-2 mb-1">
+                                <div class="w-8 h-8 rounded-lg bg-violet-500/10 border border-violet-500/20 flex items-center justify-center">
+                                    <i class="fa-solid fa-diagram-project text-violet-400 text-sm"></i>
+                                </div>
+                                <span class="font-semibold text-sm text-white">5-Stage Pipeline Simulator</span>
+                            </div>
+                            <p class="mono text-[10px] text-slate-500 ml-10">Branch outcome resolved at <span class="text-amber-400">EX</span> stage — earlier instructions may be flushed</p>
+                        </div>
+                        <button onclick="triggerPipelineAnimation()"
+                                class="flex-shrink-0 px-4 py-2 mono text-[10px] font-semibold bg-violet-500/15 hover:bg-violet-500/25 text-violet-300 border border-violet-500/25 hover:border-violet-500/50 transition-all rounded-xl flex items-center gap-x-1.5 ml-2">
+                            <i class="fa-solid fa-play text-[9px]"></i>
+                            RUN
+                        </button>
+                    </div>
+
+                    <!-- Stage labels row -->
+                    <div class="pipeline-wrapper mb-2">
+                        <div class="text-center mono text-[9px] text-cyan-400 tracking-widest font-bold">IF</div>
+                        <div class="text-center mono text-[9px] text-violet-400 tracking-widest font-bold">ID</div>
+                        <div class="text-center mono text-[9px] text-amber-400 tracking-widest font-bold">EX</div>
+                        <div class="text-center mono text-[9px] text-sky-400 tracking-widest font-bold">MEM</div>
+                        <div class="text-center mono text-[9px] text-emerald-400 tracking-widest font-bold">WB</div>
+                    </div>
+
+                    <!-- Stage cards row -->
+                    <div class="pipeline-wrapper" id="pipeline-stages">
+                        <!-- JS populated -->
+                    </div>
+
+                    <!-- Arrow connector row -->
+                    <div class="pipeline-wrapper mt-2" id="pipeline-arrows">
+                        <div class="text-center mono text-[9px] text-slate-600">Fetch</div>
+                        <div class="text-center mono text-[9px] text-slate-600">Decode</div>
+                        <div class="text-center mono text-[9px] text-slate-600">Execute</div>
+                        <div class="text-center mono text-[9px] text-slate-600">Memory</div>
+                        <div class="text-center mono text-[9px] text-slate-600">Writeback</div>
+                    </div>
+
+                    <!-- Flow indicator -->
+                    <div class="mt-3 flex items-center gap-x-1 justify-center opacity-40">
+                        <div class="h-px flex-1 bg-gradient-to-r from-transparent via-cyan-500 to-transparent"></div>
+                        <span class="mono text-[9px] text-slate-400 px-2">DATA FLOW →</span>
+                        <div class="h-px flex-1 bg-gradient-to-r from-transparent via-violet-500 to-transparent"></div>
+                    </div>
+
+                    <!-- Flush notice -->
+                    <div id="flush-notice" class="hidden mt-4 rounded-xl p-3.5 flex items-center gap-x-3">
+                        <div class="w-8 h-8 rounded-lg bg-rose-500/20 flex items-center justify-center flex-shrink-0">
+                            <i class="fa-solid fa-burst text-rose-400 text-sm"></i>
+                        </div>
+                        <div>
+                            <div class="text-rose-300 text-xs font-semibold">Pipeline Flush Detected</div>
+                            <p class="text-rose-400/70 text-[10px] mt-0.5">Incorrectly fetched instructions discarded. 2–3 cycles wasted.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- EDUCATIONAL -->
+                <div class="glass rounded-2xl p-5">
+                    <div class="mono text-[9px] uppercase tracking-[3px] text-cyan-500 mb-4">Why This Matters</div>
+                    <div class="space-y-4">
+                        <div class="flex gap-3.5">
+                            <div class="w-7 h-7 flex-shrink-0 rounded-lg bg-cyan-900/40 border border-cyan-700/30 text-cyan-400 flex items-center justify-center text-xs font-bold">1</div>
+                            <div>
+                                <div class="text-sm font-medium text-white">Control Hazard</div>
+                                <div class="text-slate-400 text-[11px] mt-0.5 leading-relaxed">Branch outcome known only at EX stage. Subsequent IF/ID instructions must be flushed — wasting cycles.</div>
+                            </div>
+                        </div>
+                        <div class="h-px bg-slate-800/60"></div>
+                        <div class="flex gap-3.5">
+                            <div class="w-7 h-7 flex-shrink-0 rounded-lg bg-violet-900/40 border border-violet-700/30 text-violet-400 flex items-center justify-center text-xs font-bold">2</div>
+                            <div>
+                                <div class="text-sm font-medium text-white">Dynamic Prediction</div>
+                                <div class="text-slate-400 text-[11px] mt-0.5 leading-relaxed"><span class="text-cyan-300">1-bit</span> flips on every mispredict. <span class="text-violet-300">2-bit</span> uses saturating counter — more stable in loop-heavy code.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- RIGHT -->
+            <div class="col-span-12 lg:col-span-3 space-y-5">
+
+                <!-- INSTRUCTION STATS -->
+                <div class="glass rounded-2xl p-5">
+                    <div class="flex items-center gap-x-2 mb-5">
+                        <i class="fa-solid fa-chart-pie text-slate-400 text-sm"></i>
+                        <span class="font-semibold text-sm text-white">Instruction Breakdown</span>
+                    </div>
+
+                    <div class="flex justify-between items-baseline mb-5">
+                        <div class="text-xs text-slate-400">Total Instructions</div>
+                        <div id="total-instr" class="mono text-3xl font-bold text-white">0</div>
+                    </div>
+
+                    <div class="h-px bg-slate-800/60 mb-5"></div>
+
+                    <div class="space-y-4">
+                        <div>
+                            <div class="flex justify-between text-xs mb-2">
+                                <span class="text-emerald-300 flex items-center gap-x-1.5">
+                                    <span class="w-2 h-2 rounded-full bg-emerald-400 inline-block"></span>
+                                    Arithmetic
+                                </span>
+                                <span id="arith-count" class="mono text-slate-300">0</span>
+                            </div>
+                            <div class="stat-bar">
+                                <div id="arith-bar" class="stat-fill bg-emerald-400" style="width:0%"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs mb-2">
+                                <span class="text-sky-300 flex items-center gap-x-1.5">
+                                    <span class="w-2 h-2 rounded-full bg-sky-400 inline-block"></span>
+                                    Memory
+                                </span>
+                                <span id="mem-count" class="mono text-slate-300">0</span>
+                            </div>
+                            <div class="stat-bar">
+                                <div id="mem-bar" class="stat-fill bg-sky-400" style="width:0%"></div>
+                            </div>
+                        </div>
+                        <div>
+                            <div class="flex justify-between text-xs mb-2">
+                                <span class="text-rose-300 flex items-center gap-x-1.5">
+                                    <span class="w-2 h-2 rounded-full bg-rose-400 inline-block"></span>
+                                    Branch / Jump
+                                </span>
+                                <span id="branch-count" class="mono text-slate-300">0</span>
+                            </div>
+                            <div class="stat-bar">
+                                <div id="branch-bar" class="stat-fill bg-rose-400" style="width:0%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- BRANCH PREDICTION SIMULATOR -->
+                <div class="glass rounded-2xl p-5">
+                    <div class="flex items-center gap-x-2 mb-4">
+                        <i class="fa-solid fa-brain text-violet-400 text-sm"></i>
+                        <span class="font-semibold text-sm text-white">Branch Prediction Simulator</span>
+                    </div>
+
+                    <button onclick="simulatePrediction()"
+                            id="predict-btn"
+                            class="predict-btn w-full py-3.5 text-white mono text-[11px] font-bold tracking-wider rounded-xl flex items-center justify-center gap-x-2.5 shadow-lg">
+                        <i class="fa-solid fa-wand-magic-sparkles text-xs"></i>
+                        SIMULATE 1-BIT &amp; 2-BIT
+                    </button>
+
+                    <div id="prediction-results" class="hidden mt-5">
+                        <table class="w-full mono text-[11px]">
+                            <thead>
+                                <tr class="border-b border-slate-700/60">
+                                    <th class="pb-2.5 text-left font-medium text-slate-500">Predictor</th>
+                                    <th class="pb-2.5 text-center font-medium text-slate-500">✓</th>
+                                    <th class="pb-2.5 text-center font-medium text-slate-500">✗</th>
+                                    <th class="pb-2.5 text-right font-medium text-slate-500">Acc</th>
+                                </tr>
+                            </thead>
+                            <tbody id="predict-table">
+                                <!-- JS -->
+                            </tbody>
+                        </table>
+                        <div class="mt-4 bg-slate-900/60 rounded-xl p-3.5 text-[10px] text-slate-400 leading-relaxed border border-slate-800/60">
+                            2-bit requires <span class="text-violet-300 font-medium">two consecutive mispredictions</span> before changing state — superior on loops.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- HAZARD COUNT BIG -->
+                <div class="glass rounded-2xl p-5 text-center" style="border-color:rgba(248,113,113,0.15);">
+                    <div class="mono text-[9px] text-slate-500 uppercase tracking-[3px] mb-2">Potential Hazards</div>
+                    <div id="hazard-big" class="hazard-big-num text-7xl font-bold leading-none">0</div>
+                    <div class="mono text-[10px] text-slate-500 mt-2">in current code</div>
+                    <div class="mt-3 h-px bg-gradient-to-r from-transparent via-rose-500/30 to-transparent"></div>
+                    <div class="mono text-[9px] text-rose-400/60 mt-3">Each = potential pipeline flush</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- FOOTER -->
+    <div class="fixed bottom-0 left-0 right-0 bg-slate-950/80 backdrop-blur-xl border-t border-slate-800/60 py-3">
+        <div class="max-w-screen-2xl mx-auto px-6 flex items-center justify-between">
+            <div class="flex items-center gap-x-6">
+                <button onclick="window.location.reload()" class="mono text-[10px] text-slate-500 hover:text-white transition-colors">RESET ALL</button>
+                <div class="flex items-center gap-x-1 mono text-[10px]">
+                    <div class="w-px h-3 bg-slate-700"></div>
+                    <span class="text-cyan-400 ml-1">IF</span>
+                    <span class="text-slate-600 mx-0.5">›</span>
+                    <span class="text-violet-400">ID</span>
+                    <span class="text-slate-600 mx-0.5">›</span>
+                    <span class="text-amber-400">EX</span>
+                    <span class="text-slate-600 mx-0.5">›</span>
+                    <span class="text-sky-400">MEM</span>
+                    <span class="text-slate-600 mx-0.5">›</span>
+                    <span class="text-emerald-400">WB</span>
+                </div>
+            </div>
+            <div class="mono text-[10px] text-slate-600">v2025.03 • DEMO</div>
+        </div>
+    </div>
+
+    <script>
+        const SAMPLE_CODE = `# RISC-V Assembly — Control Hazard Demo
+addi x5, x0, 0       # sum = 0
+addi x6, x0, 20      # loop counter = 20
+loop_start:
+    add  x5, x5, x6       # sum += counter
+    addi x6, x6, -1       # counter--
+    bne  x6, x0, loop_start  # branch if not zero
+
+    # Another branch example
+    blt  x5, x7, end_func
+    jal  x1, subroutine   # jump and link
+
+subroutine:
+    addi x8, x0, 42
+    jalr x0, x1, 0        # return
+end_func:
+    lw   x9, 0(x10)       # memory access
+    sw   x5, 0(x11)`
+
+        let parsedInstructions = []
+        let branchesDetected = []
+        let totalInstr = 0, arithCount = 0, memCount = 0, branchCount = 0
+
+        const BRANCH_OPS = new Set(['beq','bne','blt','bge','jal','jalr'])
+        const MEM_OPS    = new Set(['lw','sw','lb','sb','ld','sd','lbu','lhu','lh'])
+
+        function getOpcode(line) {
+            let clean = line.split('#')[0].trim()
+            if (!clean) return null
+            let parts = clean.split(/\s+/)
+            let first = parts[0]
+            if (first.endsWith(':')) return parts.length > 1 ? parts[1].toLowerCase() : null
+            return first.toLowerCase()
+        }
+
+        function parseCode(code) {
+            const lines = code.split('\n')
+            parsedInstructions = []; branchesDetected = []
+            totalInstr = arithCount = memCount = branchCount = 0
+
+            lines.forEach((line, idx) => {
+                const trimmed = line.trim()
+                if (!trimmed || trimmed.startsWith('#')) return
+                const opcode = getOpcode(line)
+                if (!opcode) return
+                totalInstr++
+                parsedInstructions.push({ line: idx+1, text: line, opcode })
+                if (BRANCH_OPS.has(opcode)) {
+                    branchCount++
+                    branchesDetected.push({ line: idx+1, instr: line.trim(), opcode })
+                } else if (MEM_OPS.has(opcode)) {
+                    memCount++
+                } else {
+                    arithCount++
+                }
+            })
+        }
+
+        function updateLineNumbers() {
+            const editor = document.getElementById('code-editor')
+            const linesContainer = document.getElementById('line-numbers')
+            const lineCount = editor.value.split('\n').length || 1
+            let html = ''
+            for (let i = 1; i <= lineCount; i++) {
+                html += `<div style="height:1.5rem;display:flex;align-items:center;justify-content:flex-end;">${i}</div>`
+            }
+            linesContainer.innerHTML = html
+        }
+
+        function renderHazardList() {
+            const container = document.getElementById('hazard-list')
+            container.innerHTML = ''
+            if (branchesDetected.length === 0) {
+                container.innerHTML = `
+                    <div class="border border-dashed border-slate-700/60 rounded-xl p-6 text-center">
+                        <i class="fa-solid fa-shield-halved text-3xl text-slate-700 mb-2"></i>
+                        <p class="text-slate-500 text-xs">No control hazards detected.<br>Try adding branch instructions.</p>
+                    </div>`
+                return
+            }
+            branchesDetected.forEach(hazard => {
+                const div = document.createElement('div')
+                div.className = 'hazard-item glass-bright rounded-xl p-3.5 cursor-pointer border border-slate-700/40 slide-in'
+                div.innerHTML = `
+                    <div class="flex items-start gap-x-3">
+                        <div class="w-6 h-6 flex-shrink-0 rounded-lg bg-rose-500/15 border border-rose-500/25 flex items-center justify-center text-rose-400 text-xs mt-0.5">⚠</div>
+                        <div class="flex-1 min-w-0">
+                            <div class="flex items-center justify-between gap-x-2">
+                                <span class="mono text-[10px] bg-slate-800/80 px-2 py-0.5 rounded text-slate-400">LINE ${hazard.line}</span>
+                                <span class="mono text-[10px] text-rose-400 font-bold">${hazard.opcode.toUpperCase()}</span>
+                            </div>
+                            <div class="mono text-[11px] text-slate-200 mt-2 break-all leading-relaxed">${hazard.instr}</div>
+                            <div class="mono text-[9px] text-slate-500 mt-1.5">Control Hazard — resolved at EX stage</div>
+                        </div>
+                    </div>`
+                div.onclick = () => {
+                    const editor = document.getElementById('code-editor')
+                    const lines = editor.value.split('\n')
+                    let pos = 0
+                    for (let k = 0; k < hazard.line - 1; k++) pos += lines[k].length + 1
+                    editor.focus()
+                    editor.setSelectionRange(pos, pos + lines[hazard.line-1].length)
+                }
+                container.appendChild(div)
+            })
+        }
+
+        function renderPipelineStages() {
+            const container = document.getElementById('pipeline-stages')
+            const stages = [
+                { id: 'if',  cls: 'stage-if',  label: 'Instruction Fetch' },
+                { id: 'id',  cls: 'stage-id',  label: 'Decode' },
+                { id: 'ex',  cls: 'stage-ex',  label: 'Execute / Branch Resolve', hazard: true },
+                { id: 'mem', cls: 'stage-mem', label: 'Memory Access' },
+                { id: 'wb',  cls: 'stage-wb',  label: 'Write Back' },
+            ]
+            container.innerHTML = stages.map(s => `
+                <div class="stage-card ${s.cls} bg-slate-900/60 border rounded-xl p-3 relative" style="border-color: inherit;">
+                    ${s.hazard ? `<div class="hazard-badge">HAZARD</div>` : ''}
+                    <div id="stage-${s.id}" class="stage-inner">${s.label}</div>
+                </div>
+            `).join('')
+        }
+
+        function renderStats() {
+            document.getElementById('total-instr').textContent = totalInstr
+            document.getElementById('arith-count').textContent = arithCount
+            document.getElementById('mem-count').textContent = memCount
+            document.getElementById('branch-count').textContent = branchCount
+            document.getElementById('hazard-big').textContent = branchCount
+            document.getElementById('hazard-count-badge').textContent = `${branchCount} HAZARD${branchCount !== 1 ? 'S' : ''}`
+
+            const total = arithCount + memCount + branchCount || 1
+            document.getElementById('arith-bar').style.width = `${Math.round(arithCount/total*100)}%`
+            document.getElementById('mem-bar').style.width   = `${Math.round(memCount/total*100)}%`
+            document.getElementById('branch-bar').style.width = `${Math.round(branchCount/total*100)}%`
+        }
+
+        function analyzeCode() {
+            const code = document.getElementById('code-editor').value.trim()
+            if (!code) { alert('Please paste some RISC-V assembly code first!'); return }
+
+            const btn = document.querySelector('.analyze-btn')
+            const orig = btn.innerHTML
+            btn.innerHTML = `<i class="fa-solid fa-spinner fa-spin text-xs"></i><span>ANALYZING...</span>`
+            btn.disabled = true
+
+            setTimeout(() => {
+                parseCode(code)
+                renderHazardList()
+                renderStats()
+                renderPipelineStages()
+
+                btn.innerHTML = orig
+                btn.disabled = false
+
+                document.getElementById('flush-notice').classList.remove('hidden')
+
+                const pb = document.getElementById('predict-btn')
+                pb.style.boxShadow = '0 0 0 3px rgba(167,139,250,0.4)'
+                setTimeout(() => { pb.style.boxShadow = '' }, 1500)
+            }, 380)
+        }
+
+        function triggerPipelineAnimation() {
+            if (parsedInstructions.length === 0) { alert('Run analysis first!'); return }
+
+            const stageEls = {
+                if: document.getElementById('stage-if'),
+                id: document.getElementById('stage-id'),
+                ex: document.getElementById('stage-ex'),
+                mem: document.getElementById('stage-mem'),
+                wb: document.getElementById('stage-wb'),
+            }
+            const colorCls = ['stage-active-cyan','stage-active-violet','stage-active-amber','stage-active-sky','stage-active-emerald']
+            const stageKeys = ['if','id','ex','mem','wb']
+            const labelMap = { if: 'Instruction Fetch', id: 'Decode', ex: 'Execute / Branch Resolve', mem: 'Memory Access', wb: 'Write Back' }
+
+            // Reset
+            stageKeys.forEach(k => {
+                stageEls[k].innerHTML = labelMap[k]
+                stageEls[k].className = 'stage-inner'
+            })
+
+            const demo = parsedInstructions.slice(0, 5)
+            let idx = 0
+
+            const interval = setInterval(() => {
+                if (idx >= 5) {
+                    clearInterval(interval)
+                    if (branchCount > 0) {
+                        stageEls.ex.classList.add('flush-anim')
+                        setTimeout(() => {
+                            stageEls.if.innerHTML = `<span style="opacity:0.3;text-decoration:line-through;font-size:10px;">FLUSHED</span>`
+                            stageEls.id.innerHTML = `<span style="opacity:0.3;text-decoration:line-through;font-size:10px;">FLUSHED</span>`
+                        }, 350)
+                    }
+                    return
+                }
+                const instr = demo[idx] ? demo[idx].opcode.toUpperCase() : 'NOP'
+                const key = stageKeys[idx]
+                const isBranch = demo[idx] && BRANCH_OPS.has(demo[idx].opcode)
+                stageEls[key].innerHTML = `<span class="${colorCls[idx]}">${instr}${isBranch ? '<br/><span style="font-size:9px;color:#fbbf24;">⚡ BRANCH</span>' : ''}</span>`
+                idx++
+            }, 400)
+        }
+
+        function simulate1BitPredictor(n) {
+            if (!n) return {correct:0, wrong:0, acc:0}
+            let outcomes = Array.from({length:n}, (_,i) => (i%4)!==3)
+            let correct = 0, prediction = false
+            for (let a of outcomes) {
+                if (prediction === a) correct++
+                prediction = a
+            }
+            return {correct, wrong: n-correct, acc: Math.round(correct/n*100)}
+        }
+
+        function simulate2BitPredictor(n) {
+            if (!n) return {correct:0, wrong:0, acc:0}
+            let outcomes = Array.from({length:n}, (_,i) => (i%4)!==3)
+            let correct = 0, state = 1
+            for (let a of outcomes) {
+                if ((state>=2) === a) correct++
+                state = a ? Math.min(3, state+1) : Math.max(0, state-1)
+            }
+            return {correct, wrong: n-correct, acc: Math.round(correct/n*100)}
+        }
+
+        function simulatePrediction() {
+            if (!branchCount) { alert('No branches detected. Analyze code first.'); return }
+            const b1 = simulate1BitPredictor(branchCount)
+            const b2 = simulate2BitPredictor(branchCount)
+            document.getElementById('predict-table').innerHTML = `
+                <tr class="border-b border-slate-800/60">
+                    <td class="py-3 text-slate-300">1-Bit</td>
+                    <td class="py-3 text-center text-emerald-400">${b1.correct}</td>
+                    <td class="py-3 text-center text-rose-400">${b1.wrong}</td>
+                    <td class="py-3 text-right font-bold text-slate-200">${b1.acc}<span class="text-slate-500 font-normal">%</span></td>
+                </tr>
+                <tr>
+                    <td class="py-3 text-slate-300">2-Bit</td>
+                    <td class="py-3 text-center text-emerald-400">${b2.correct}</td>
+                    <td class="py-3 text-center text-rose-400">${b2.wrong}</td>
+                    <td class="py-3 text-right font-bold text-violet-300">${b2.acc}<span class="text-slate-500 font-normal">%</span></td>
+                </tr>`
+            document.getElementById('prediction-results').classList.remove('hidden')
+        }
+
+        function loadSampleCode() {
+            document.getElementById('code-editor').value = SAMPLE_CODE
+            updateLineNumbers()
+            setTimeout(analyzeCode, 200)
+        }
+
+        function clearEditor() {
+            if (!confirm('Clear editor?')) return
+            document.getElementById('code-editor').value = ''
+            updateLineNumbers()
+            document.getElementById('hazard-list').innerHTML = `
+                <div class="border border-dashed border-slate-700/60 rounded-xl p-6 text-center">
+                    <i class="fa-solid fa-shield-halved text-3xl text-slate-700 mb-2"></i>
+                    <p class="text-slate-500 text-xs">Ready for analysis</p>
+                </div>`
+            ;['total-instr','arith-count','mem-count','branch-count','hazard-big'].forEach(id => {
+                document.getElementById(id).textContent = '0'
+            })
+            document.getElementById('hazard-count-badge').textContent = '0 HAZARDS'
+            document.getElementById('prediction-results').classList.add('hidden')
+            document.getElementById('flush-notice').classList.add('hidden')
+            ;['arith-bar','mem-bar','branch-bar'].forEach(id => {
+                document.getElementById(id).style.width = '0%'
+            })
+        }
+
+        function copyCode() {
+            const val = document.getElementById('code-editor').value
+            if (!val) return
+            navigator.clipboard.writeText(val)
+        }
+
+        window.onload = () => {
+            updateLineNumbers()
+            document.getElementById('code-editor').placeholder = `# Paste RISC-V code here...\n\n# Example:\naddi x1, x0, 10\nloop:\n  bne x1, x0, loop\n  addi x1, x1, -1`
+            renderPipelineStages()
+
+            document.addEventListener('keydown', e => {
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') analyzeCode()
+            })
+
+            const lineDiv = document.getElementById('line-numbers')
+            document.getElementById('code-editor').addEventListener('scroll', e => {
+                lineDiv.scrollTop = e.target.scrollTop
+            })
+        }
+    </script>
+</body>
+</html>
+
